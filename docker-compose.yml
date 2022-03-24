@@ -1,0 +1,16 @@
+version: "3"
+
+services:
+
+  mobyt-exporter:
+    container_name: mobyt-exporter
+    image: mobyt-exporter:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - "MOBYT_ENDPOINT=${MOBYT_ENDPOINT}"
+      - "MOBYT_USERNAME=${MOBYT_USERNAME}"
+      - "MOBYT_PASSWORD=${MOBYT_PASSWORD}"
+    ports:
+      - "9141:9141"
