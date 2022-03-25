@@ -85,7 +85,7 @@ type SMSCredit struct {
 	Sms   []struct {
 		Type     string `json:"type"`
 		Quantity int    `json:"quantity"`
-	} `json:sms`
+	} `json:"sms"`
 	Email []struct {
 		BandWidth float64 `json:"bandwidth"`
 		Purchased string  `json:"purchased"`
@@ -98,6 +98,8 @@ const namespace = "mobyt"
 const login_uri = "/API/v1.0/REST/login"
 const status_uri = "/API/v1.0/REST/status"
 const history_uri = "/API/v1.0/REST/smshistory"
+
+var duration = []string{"1H", "1D", "1W", "1M"}
 
 var (
 	tr = &http.Transport{
@@ -121,12 +123,12 @@ var (
 	smsSent = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "sms_sent"),
 		"Number of sms sent since one hour.",
-		[]string{"sender"}, nil,
+		[]string{"duration"}, nil,
 	)
 	smsMoney = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "sms_money"),
 		"Account current money",
-		[]string{"sender"}, nil,
+		nil, nil,
 	)
 	smsCredit = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "sms_credit"),
@@ -161,7 +163,7 @@ func mobytRequest(endpoint string, auth []string) []byte {
 	return body
 }
 
-func getSMSLastHourSent(body []byte) int {
+func getSMSSent(body []byte) int {
 	var sms_sent SMSHistory
 	if err := json.Unmarshal(body, &sms_sent); err != nil {
 		log.Fatalln(err)
@@ -170,13 +172,13 @@ func getSMSLastHourSent(body []byte) int {
 	return sms_sent.Total
 }
 
-func getSMSCredit(body []byte) (float64, int) {
+func getSMSCredit(body []byte) (float64, SMSCredit) {
 	var sms_credit SMSCredit
 	if err := json.Unmarshal(body, &sms_credit); err != nil {
 		log.Fatalln(err)
 	}
 
-	return sms_credit.Money, sms_credit.Sms[0].Quantity
+	return sms_credit.Money, sms_credit
 }
 
 type Exporter struct {
@@ -199,6 +201,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
+	// request api to get session information like client key and session key
 	mobytIdSessionKey, err := e.LoadMobytIdSessionMap()
 	if err != nil {
 		ch <- prometheus.MustNewConstMetric(
@@ -210,7 +213,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
 		up, prometheus.GaugeValue, 1,
 	)
-
+	// request api to get indicator
 	e.HitMobytRestApisAndUpdateMetrics(mobytIdSessionKey, ch)
 }
 
@@ -254,12 +257,16 @@ func (e *Exporter) HitMobytRestApisAndUpdateMetrics(auth []string, ch chan<- pro
 	sms_money, sms_credit := getSMSCredit(mobytRequest(url, auth))
 	//fmt.Println("sms_credit")
 	ch <- prometheus.MustNewConstMetric(
-		smsCredit, prometheus.GaugeValue, float64(sms_credit), "",
+		smsMoney, prometheus.GaugeValue, float64(sms_money),
 	)
 	//fmt.Println("sms_money")
-	ch <- prometheus.MustNewConstMetric(
-		smsMoney, prometheus.GaugeValue, sms_money, "",
-	)
+	if len(sms_credit.Sms) > 0 {
+		for _, c := range sms_credit.Sms {
+			ch <- prometheus.MustNewConstMetric(
+				smsCredit, prometheus.GaugeValue, float64(c.Quantity), c.Type,
+			)
+		}
+	}
 
 	// Get
 	log.Printf("Get one hour sms history")
@@ -270,14 +277,36 @@ func (e *Exporter) HitMobytRestApisAndUpdateMetrics(auth []string, ch chan<- pro
 		log.Fatalln(err)
 	}
 	localtime := current_time.In(location)
-	one_hour_ago := localtime.Add(-1 * time.Hour)
-	date := fmt.Sprintf("%d%02d%02d%02d%02d%02d", one_hour_ago.Year(), one_hour_ago.Month(), one_hour_ago.Day(),
-		one_hour_ago.Hour(), one_hour_ago.Minute(), one_hour_ago.Second())
-	url = e.mobytEndpoint + history_uri + "?from=" + date
-	sms_sent := getSMSLastHourSent(mobytRequest(url, auth))
-	ch <- prometheus.MustNewConstMetric(
-		smsSent, prometheus.GaugeValue, float64(sms_sent), "",
-	)
+	for _, d := range duration {
+		staggered_time := localtime
+		switch d {
+		case "1H":
+			staggered_time = localtime.Add(-1 * time.Hour)
+		case "1D":
+			staggered_time = localtime.Add(-24 * time.Hour)
+		case "1W":
+			staggered_time = localtime.Add(-7 * 24 * time.Hour)
+		case "2W":
+			staggered_time = localtime.Add(-14 * 24 * time.Hour)
+		case "1M":
+			staggered_time = localtime.Add(-30 * 24 * time.Hour)
+		case "3M":
+			staggered_time = localtime.Add(-3 * 30 * 24 * time.Hour)
+		case "6M":
+			staggered_time = localtime.Add(-6 * 30 * 24 * time.Hour)
+		case "1Y":
+			staggered_time = localtime.Add(-365 * 24 * time.Hour)
+		}
+		// the attribut from must have the following format YYYYMMDDhhmmss
+		date := fmt.Sprintf("%d%02d%02d%02d%02d%02d", staggered_time.Year(),
+			staggered_time.Month(), staggered_time.Day(), staggered_time.Hour(),
+			staggered_time.Minute(), staggered_time.Second())
+		url = e.mobytEndpoint + history_uri + "?from=" + date
+		sms_sent := getSMSSent(mobytRequest(url, auth))
+		ch <- prometheus.MustNewConstMetric(
+			smsSent, prometheus.GaugeValue, float64(sms_sent), d,
+		)
+	}
 
 	log.Println("Endpoint scraped")
 }
@@ -310,7 +339,7 @@ func main() {
 		w.Write([]byte(`<html>
 		<head><title>Mobyt Exporter</title></head>
 		<body>
-		<h1>Mobyt Exporter,/h1>
+		<h1>Mobyt Exporter</h1>
 		<p><a href='` + *metricsPath + `'>Metrics</a></p>
 		</body>
 		</html>`))
