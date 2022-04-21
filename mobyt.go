@@ -103,6 +103,7 @@ var duration = []string{"1H", "1D", "1W", "1M"}
 
 var (
 	tr = &http.Transport{
+		Proxy:           http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 	client = &http.Client{Transport: tr}
